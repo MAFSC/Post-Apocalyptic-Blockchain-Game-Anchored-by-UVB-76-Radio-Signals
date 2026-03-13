@@ -5,238 +5,383 @@ import os
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+class Transaction:
+    """User message (transaction)."""
+    def __init__(self, sender: str, recipient: str, message: str, timestamp: Optional[float] = None):
+        self.sender = sender
+        self.recipient = recipient
+        self.message = message
+        self.timestamp = timestamp if timestamp is not None else time.time()
+        self.hash = self.compute_hash()
+
+    def compute_hash(self) -> str:
+        """Computes the transaction hash."""
+        data = f"{self.sender}{self.recipient}{self.message}{self.timestamp}"
+        return hashlib.sha256(data.encode('utf-8')).hexdigest()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'sender': self.sender,
+            'recipient': self.recipient,
+            'message': self.message,
+            'timestamp': self.timestamp,
+            'hash': self.hash
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Transaction':
+        tx = cls(
+            sender=data['sender'],
+            recipient=data['recipient'],
+            message=data['message'],
+            timestamp=data['timestamp']
+        )
+        if tx.hash != data['hash']:
+            raise ValueError("Transaction hash does not match!")
+        return tx
+
 class Block:
-    """Class representing a single block in the chain."""
-    def __init__(self, index: int, previous_hash: str, message: str, timestamp: Optional[float] = None):
+    """Main blockchain block, now includes a list of transaction hashes."""
+    def __init__(self, index: int, previous_hash: str, station_message: str,
+                 tx_hashes: Optional[List[str]] = None, timestamp: Optional[float] = None):
         self.index = index
         self.previous_hash = previous_hash
-        self.message = message
-        # If timestamp is not provided, use the current time
+        self.station_message = station_message
+        self.tx_hashes = tx_hashes if tx_hashes is not None else []
         self.timestamp = timestamp if timestamp is not None else time.time()
-        # Hash of the message (from the message text in UTF-8 encoding)
-        self.message_hash = hashlib.sha256(message.encode('utf-8')).hexdigest()
-        # Hash of the entire block (includes previous hash, index, timestamp, message_hash)
+        self.station_message_hash = hashlib.sha256(station_message.encode('utf-8')).hexdigest()
         self.block_hash = self.compute_block_hash()
 
     def compute_block_hash(self) -> str:
-        """Computes the SHA-256 hash of the block's content."""
+        """Block hash includes previous hash, index, timestamp, station message hash, and the list of transaction hashes."""
         block_string = json.dumps({
             'index': self.index,
             'previous_hash': self.previous_hash,
             'timestamp': self.timestamp,
-            'message_hash': self.message_hash
+            'station_message_hash': self.station_message_hash,
+            'tx_hashes': sorted(self.tx_hashes)  # sort for determinism
         }, sort_keys=True).encode('utf-8')
         return hashlib.sha256(block_string).hexdigest()
 
     def to_dict(self) -> Dict[str, Any]:
-        """Returns a dictionary with block data for serialization."""
         return {
             'index': self.index,
             'previous_hash': self.previous_hash,
-            'message': self.message,
+            'station_message': self.station_message,
             'timestamp': self.timestamp,
-            'message_hash': self.message_hash,
+            'station_message_hash': self.station_message_hash,
+            'tx_hashes': self.tx_hashes,
             'block_hash': self.block_hash
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Block':
-        """Creates a block from a dictionary (deserialization)."""
         block = cls(
             index=data['index'],
             previous_hash=data['previous_hash'],
-            message=data['message'],
+            station_message=data['station_message'],
+            tx_hashes=data['tx_hashes'],
             timestamp=data['timestamp']
         )
-        # Check that the stored hashes match the computed ones (optional)
-        if block.message_hash != data['message_hash'] or block.block_hash != data['block_hash']:
-            raise ValueError("Block hashes do not match! Data may be corrupted.")
+        if block.block_hash != data['block_hash']:
+            raise ValueError("Block hash does not match!")
         return block
 
-
 class BlockchainNode:
-    """Blockchain node working completely offline (local storage and input only)."""
-    def __init__(self, storage_file: str = 'blockchain.json'):
+    def __init__(self, storage_file: str = 'blockchain.json', tx_pool_file: str = 'tx_pool.json'):
         self.storage_file = storage_file
+        self.tx_pool_file = tx_pool_file
         self.chain: List[Block] = []
+        self.tx_pool: Dict[str, Transaction] = {}  # hash -> transaction
         self.load_chain()
+        self.load_tx_pool()
 
     def create_genesis_block(self) -> Block:
-        """Creates the first (genesis) block with a fixed message."""
-        print("Creating genesis block...")
         return Block(
             index=0,
             previous_hash='0',
-            message='### GENESIS BLOCK OF UVB-76 OBSERVER CHAIN ###',
-            timestamp=time.time()
+            station_message='### GENESIS BLOCK OF UVB-76 OBSERVER CHAIN ###',
+            tx_hashes=[]
         )
 
     def load_chain(self):
-        """Loads the chain from a file if it exists. Otherwise creates the genesis block."""
         if os.path.exists(self.storage_file):
             try:
                 with open(self.storage_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self.chain = [Block.from_dict(block_data) for block_data in data]
-                print(f"Chain loaded from {self.storage_file}. Total blocks: {len(self.chain)}")
+                print(f"Chain loaded. Blocks: {len(self.chain)}")
             except Exception as e:
-                print(f"Error loading chain: {e}. A new chain will be created.")
+                print(f"Error loading chain: {e}. Creating new chain.")
                 self.chain = [self.create_genesis_block()]
                 self.save_chain()
         else:
-            print("Chain file not found. Creating a new chain.")
             self.chain = [self.create_genesis_block()]
             self.save_chain()
 
     def save_chain(self):
-        """Saves the chain to a file in JSON format."""
         with open(self.storage_file, 'w', encoding='utf-8') as f:
             json.dump([block.to_dict() for block in self.chain], f, ensure_ascii=False, indent=2)
-        print(f"Chain saved to {self.storage_file}")
 
-    def add_block(self, message: str):
-        """Adds a new block with the given message to the chain."""
-        if not message.strip():
-            print("Empty message cannot be added.")
+    def load_tx_pool(self):
+        if os.path.exists(self.tx_pool_file):
+            try:
+                with open(self.tx_pool_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self.tx_pool = {tx_hash: Transaction.from_dict(tx_data) for tx_hash, tx_data in data.items()}
+                print(f"Transaction pool loaded. Transactions: {len(self.tx_pool)}")
+            except Exception as e:
+                print(f"Error loading transaction pool: {e}. Creating new pool.")
+                self.tx_pool = {}
+        else:
+            self.tx_pool = {}
+
+    def save_tx_pool(self):
+        with open(self.tx_pool_file, 'w', encoding='utf-8') as f:
+            data = {tx_hash: tx.to_dict() for tx_hash, tx in self.tx_pool.items()}
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def add_transaction(self, sender: str, recipient: str, message: str) -> str:
+        """Creates a new transaction and adds it to the pool."""
+        tx = Transaction(sender, recipient, message)
+        self.tx_pool[tx.hash] = tx
+        self.save_tx_pool()
+        print(f"✅ Transaction created. Hash: {tx.hash[:16]}...")
+        return tx.hash
+
+    def add_block(self, station_message: str, selected_tx_hashes: Optional[List[str]] = None):
+        """Adds a new block based on the station message and selected transaction hashes."""
+        if not station_message.strip():
+            print("Station message cannot be empty.")
             return
+
+        if selected_tx_hashes is None:
+            # By default, include all unconfirmed transactions from the pool
+            selected_tx_hashes = list(self.tx_pool.keys())
+        else:
+            # Check that all hashes are in the pool
+            for h in selected_tx_hashes:
+                if h not in self.tx_pool:
+                    print(f"Hash {h[:16]}... not in pool. Skipping.")
+                    selected_tx_hashes = [h for h in selected_tx_hashes if h in self.tx_pool]
+
         last_block = self.chain[-1]
         new_block = Block(
             index=last_block.index + 1,
             previous_hash=last_block.block_hash,
-            message=message.strip()
+            station_message=station_message.strip(),
+            tx_hashes=selected_tx_hashes
         )
         self.chain.append(new_block)
         self.save_chain()
+
+        # Remove confirmed transactions from the pool
+        for h in selected_tx_hashes:
+            self.tx_pool.pop(h, None)
+        self.save_tx_pool()
+
         print(f"\n✅ Block #{new_block.index} added!")
-        print(f"   Message: {new_block.message}")
-        print(f"   Message hash: {new_block.message_hash[:16]}...")
+        print(f"   Station message: {new_block.station_message}")
+        print(f"   Transactions included: {len(new_block.tx_hashes)}")
         print(f"   Block hash: {new_block.block_hash[:16]}...")
 
     def print_chain(self, limit: Optional[int] = None):
-        """Prints the last few blocks of the chain (or the entire chain)."""
-        print("\n" + "="*60)
-        print(f"Block chain (total blocks: {len(self.chain)})")
-        print("="*60)
+        print("\n" + "="*70)
+        print(f"BLOCKCHAIN (total: {len(self.chain)})")
+        print("="*70)
         start = 0 if limit is None else max(0, len(self.chain) - limit)
         for i in range(start, len(self.chain)):
             block = self.chain[i]
             print(f"\nBlock #{block.index}")
-            print(f"   Previous hash: {block.previous_hash[:16]}...")
-            print(f"   Message: {block.message}")
+            print(f"   Prev hash: {block.previous_hash[:16]}...")
+            print(f"   Station message: {block.station_message}")
             dt = datetime.fromtimestamp(block.timestamp).strftime('%Y-%m-%d %H:%M:%S')
-            print(f"   Added at: {dt}")
-            print(f"   Message hash: {block.message_hash[:16]}...")
+            print(f"   Time: {dt}")
+            print(f"   Station message hash: {block.station_message_hash[:16]}...")
+            if block.tx_hashes:
+                print(f"   Transaction hashes ({len(block.tx_hashes)}):")
+                for th in block.tx_hashes[:5]:  # show at most 5
+                    print(f"      {th[:16]}...")
+                if len(block.tx_hashes) > 5:
+                    print(f"      ... and {len(block.tx_hashes)-5} more")
             print(f"   Block hash: {block.block_hash[:16]}...")
-        print("="*60)
+
+    def print_tx_pool(self):
+        print("\n--- Unconfirmed transaction pool ---")
+        if not self.tx_pool:
+            print("Pool is empty.")
+        else:
+            for tx_hash, tx in self.tx_pool.items():
+                dt = datetime.fromtimestamp(tx.timestamp).strftime('%Y-%m-%d %H:%M:%S')
+                print(f"Hash: {tx_hash[:16]}... From: {tx.sender} To: {tx.recipient} Time: {dt}")
 
     def verify_chain(self) -> bool:
-        """Verifies chain integrity: all hashes correct and links valid."""
-        print("\nVerifying chain integrity...")
         for i in range(1, len(self.chain)):
-            current = self.chain[i]
-            previous = self.chain[i-1]
-            # Check link to previous block
-            if current.previous_hash != previous.block_hash:
-                print(f"❌ Error: block #{i} references an incorrect previous hash.")
+            curr = self.chain[i]
+            prev = self.chain[i-1]
+            if curr.previous_hash != prev.block_hash:
+                print(f"❌ Link error in block {i}")
                 return False
-            # Check that the stored block hash matches the computed one
-            if current.block_hash != current.compute_block_hash():
-                print(f"❌ Error: block #{i} hash does not match computed hash.")
+            if curr.block_hash != curr.compute_block_hash():
+                print(f"❌ Invalid block hash in block {i}")
                 return False
-            # Check message hash
-            if current.message_hash != hashlib.sha256(current.message.encode('utf-8')).hexdigest():
-                print(f"❌ Error: block #{i} message hash does not match.")
+            # Check station message hash
+            if curr.station_message_hash != hashlib.sha256(curr.station_message.encode('utf-8')).hexdigest():
+                print(f"❌ Invalid station message hash in block {i}")
                 return False
-        print("✅ Chain is intact. All blocks are correct.")
+        print("✅ Chain is intact.")
         return True
 
-    def sync_with_file(self, other_chain_file: str):
-        """
-        Synchronizes the current chain with a chain from another file.
-        Accepts the longer chain if it starts the same as the current one.
-        """
-        if not os.path.exists(other_chain_file):
-            print(f"File {other_chain_file} not found.")
+    def sync_with_peer(self, peer_chain_file: str, peer_tx_file: str):
+        """Synchronizes the chain and transaction pool with another node's files."""
+        # Load peer's chain
+        if not os.path.exists(peer_chain_file):
+            print(f"File {peer_chain_file} not found.")
             return
-        try:
-            with open(other_chain_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            other_chain = [Block.from_dict(block_data) for block_data in data]
-        except Exception as e:
-            print(f"Error loading other chain: {e}")
-            return
+        with open(peer_chain_file, 'r', encoding='utf-8') as f:
+            peer_chain_data = json.load(f)
+        peer_chain = [Block.from_dict(bd) for bd in peer_chain_data]
 
-        print(f"\nLoaded other chain from {other_chain_file} (blocks: {len(other_chain)})")
+        # Load peer's pool
+        peer_tx_pool = {}
+        if os.path.exists(peer_tx_file):
+            with open(peer_tx_file, 'r', encoding='utf-8') as f:
+                peer_tx_data = json.load(f)
+            peer_tx_pool = {h: Transaction.from_dict(txd) for h, txd in peer_tx_data.items()}
 
-        # Find common prefix
+        # Compare chains (simple rule: accept longer chain if it starts the same)
         common_len = 0
-        for i in range(min(len(self.chain), len(other_chain))):
-            if (self.chain[i].block_hash == other_chain[i].block_hash and
-                self.chain[i].message == other_chain[i].message):
+        for i in range(min(len(self.chain), len(peer_chain))):
+            if self.chain[i].block_hash == peer_chain[i].block_hash:
                 common_len = i + 1
             else:
                 break
 
-        if common_len == 0 and len(self.chain) > 0 and len(other_chain) > 0:
-            print("❌ Chains do not share a common beginning. Synchronization impossible.")
+        if common_len == 0:
+            print("❌ Chains have no common prefix. Synchronization impossible.")
             return
 
-        if len(other_chain) > len(self.chain) and common_len == len(self.chain):
-            # Our chain is a prefix of the longer one — we can extend
-            print("Our chain is shorter and fully matches the beginning of the other. Accepting the other chain.")
-            self.chain = other_chain
+        if len(peer_chain) > len(self.chain) and common_len == len(self.chain):
+            print("Our chain is shorter and is a prefix of the peer's chain. Accepting peer's chain.")
+            self.chain = peer_chain
             self.save_chain()
-            print("✅ Chain updated.")
-        elif len(other_chain) < len(self.chain) and common_len == len(other_chain):
-            print("The other chain is shorter and is a prefix of ours. Nothing to do.")
-        elif common_len < len(self.chain) and common_len < len(other_chain):
-            print(f"⚠️ Conflict: chains diverge at block #{common_len}. Manual resolution required.")
-            # Could prompt the user to choose, but for simplicity we do nothing.
+        elif len(peer_chain) < len(self.chain) and common_len == len(peer_chain):
+            print("Our chain is longer, peer's chain is outdated.")
+        elif common_len < len(self.chain) and common_len < len(peer_chain):
+            print("⚠️ Conflict: chains have diverged. Manual resolution required.")
+            # Could ask the user, but for now do nothing
         else:
-            print("Chains are identical or synchronization not needed.")
+            print("Chains are identical.")
+
+        # Merge transaction pools (take all from both pools)
+        merged_pool = {**self.tx_pool, **peer_tx_pool}
+        if len(merged_pool) != len(self.tx_pool):
+            self.tx_pool = merged_pool
+            self.save_tx_pool()
+            print(f"Transaction pool merged. Now transactions: {len(self.tx_pool)}")
+        else:
+            print("Transaction pools already synchronized.")
 
 def main():
-    print("="*60)
-    print("   OFFLINE BLOCKCHAIN FOR UVB-76 OBSERVER")
-    print("="*60)
-    print("Every new message from the radio station becomes a new block.")
-    print("The chain is saved in the file blockchain.json.\n")
-
+    print("="*70)
+    print("   OFFLINE UVB-76 BLOCKCHAIN WITH MESSAGE SUPPORT")
+    print("="*70)
     node = BlockchainNode()
 
     while True:
         print("\n--- Menu ---")
-        print("1. Add new message (block)")
-        print("2. Show last 10 blocks")
-        print("3. Show entire chain")
-        print("4. Verify chain integrity")
-        print("5. Synchronize with another node's file")
-        print("6. Exit")
-        choice = input("Choose action (1-6): ").strip()
+        print("1. Add new station message (block)")
+        print("2. Create personal message (transaction)")
+        print("3. Show unconfirmed transaction pool")
+        print("4. Show last 10 blocks")
+        print("5. Show entire chain")
+        print("6. Verify chain integrity")
+        print("7. Synchronize with another node (files)")
+        print("8. Export transaction pool to file")
+        print("9. Import transactions from file")
+        print("0. Exit")
+        choice = input("Choose action: ").strip()
 
         if choice == '1':
-            print("\nEnter the message (e.g., from UVB-76):")
-            print("HЖTИ 76472 ПEPEДEPЖKA 4301 8808 Time: 19:44 MSK Date: 2026-03-12")
-            message = input("Message: ").strip()
-            if message:
-                node.add_block(message)
+            msg = input("Enter message from UVB-76: ").strip()
+            if msg:
+                # Ask which transactions to include
+                include_all = input("Include all unconfirmed transactions? (y/n): ").strip().lower()
+                if include_all == 'y':
+                    node.add_block(msg)
+                else:
+                    # Show list of hashes in pool
+                    node.print_tx_pool()
+                    tx_hashes = input("Enter transaction hashes separated by commas (or leave empty): ").strip()
+                    if tx_hashes:
+                        selected = [h.strip() for h in tx_hashes.split(',') if h.strip()]
+                        node.add_block(msg, selected)
+                    else:
+                        node.add_block(msg, [])
             else:
-                print("Message cannot be empty.")
+                print("Empty message.")
+
         elif choice == '2':
-            node.print_chain(limit=10)
+            sender = input("Your name (sender): ").strip()
+            recipient = input("To: ").strip()
+            message = input("Message text: ").strip()
+            if sender and recipient and message:
+                node.add_transaction(sender, recipient, message)
+            else:
+                print("All fields must be filled.")
+
         elif choice == '3':
-            node.print_chain()
+            node.print_tx_pool()
+
         elif choice == '4':
-            node.verify_chain()
+            node.print_chain(limit=10)
+
         elif choice == '5':
-            filename = input("Enter the filename with the other node's chain (e.g., other.json): ").strip()
-            if filename:
-                node.sync_with_file(filename)
+            node.print_chain()
+
         elif choice == '6':
+            node.verify_chain()
+
+        elif choice == '7':
+            chain_file = input("Filename of the other node's chain (e.g., peer_chain.json): ").strip()
+            tx_file = input("Filename of the other node's transaction pool (e.g., peer_tx.json): ").strip()
+            if chain_file and tx_file:
+                node.sync_with_peer(chain_file, tx_file)
+
+        elif choice == '8':
+            # Export pool to a separate file for transfer
+            export_file = input("Filename to export pool: ").strip()
+            if export_file:
+                with open(export_file, 'w', encoding='utf-8') as f:
+                    data = {h: tx.to_dict() for h, tx in node.tx_pool.items()}
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                print(f"Pool exported to {export_file}")
+
+        elif choice == '9':
+            # Import transactions from file (add to pool)
+            import_file = input("Filename to import: ").strip()
+            if os.path.exists(import_file):
+                with open(import_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                imported = 0
+                for h, tx_data in data.items():
+                    if h not in node.tx_pool:
+                        try:
+                            tx = Transaction.from_dict(tx_data)
+                            node.tx_pool[h] = tx
+                            imported += 1
+                        except:
+                            print(f"Error importing transaction {h[:16]}...")
+                node.save_tx_pool()
+                print(f"Imported {imported} new transactions.")
+            else:
+                print("File not found.")
+
+        elif choice == '0':
             print("Goodbye!")
             break
         else:
-            print("Invalid input. Please choose 1-6.")
+            print("Invalid input.")
 
 if __name__ == '__main__':
     main()
