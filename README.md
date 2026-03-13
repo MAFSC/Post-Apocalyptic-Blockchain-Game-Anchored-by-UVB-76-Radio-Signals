@@ -29,9 +29,9 @@ How to join the game
 
     Install Python 3.6+.
 
-    Save the script as uvb76_node.py.
+    Save the script as scrypt.py.
 
-    Run it: python uvb76_node.py.
+    Run it: python scrypt.py.
 
     Listen to UVB‑76 online at https://www.uvb76radio.ru/ or https://t.me/s/uvb76broadcast or via a real shortwave receiver (4625 kHz).
 
