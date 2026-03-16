@@ -33,7 +33,7 @@ How to join the game
 
     Run it: python scrypt.py.
 
-    Listen to UVB‑76 online at https://www.uvb76radio.ru/ or https://t.me/s/uvb76broadcast or via a real shortwave receiver (4625 kHz).
+    Listen to UVB‑76 online at https://www.uvb76radio.ru/ or https://t.me/s/uvb76broadcast or https://web.max.ru/-71006372263282 or via a real shortwave receiver (4625 kHz).
 
     Every time you hear a voice message, add it as a new block.
 
