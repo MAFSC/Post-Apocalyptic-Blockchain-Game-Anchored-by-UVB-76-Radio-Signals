@@ -7,6 +7,9 @@ A post-apocalyptic blockchain game anchored by UVB-76 radio signals
 
 Genesis block: "HЖTИ 76472 ПEPEДEPЖKA 4301 8808" (real UVB-76 transmission)
 All participants start from this block.
+
+Key feature: Genesis blocks are considered identical if they have the same
+station message, even if timestamps differ.
 """
 
 import hashlib
@@ -23,8 +26,6 @@ from datetime import datetime
 # Реальное сообщение УВБ-76, которое становится генезис-блоком
 GENESIS_MESSAGE = "HЖTИ 76472 ПEPEДEPЖKA 4301 8808"
 
-# Опционально можно добавить время, если известно
-# GENESIS_TIMESTAMP = 1741794240  # 12.03.2026 19:44 МСК (если известно)
 
 class Transaction:
     """User message (transaction)."""
@@ -81,14 +82,23 @@ class Block:
         self.block_hash = self.compute_block_hash()
 
     def compute_block_hash(self) -> str:
-        """Computes the block hash including all fields."""
+        """
+        Computes the block hash including all fields.
+        For genesis block (index=0), timestamp is EXCLUDED from hash calculation
+        to allow different nodes to have the same genesis block even if created
+        at different times.
+        """
         block_data = {
             'index': self.index,
             'previous_hash': self.previous_hash,
-            'timestamp': self.timestamp,
             'station_message_hash': self.station_message_hash,
             'tx_hashes': self.tx_hashes
         }
+        
+        # For non-genesis blocks, include timestamp in hash
+        if self.index > 0:
+            block_data['timestamp'] = self.timestamp
+            
         block_string = json.dumps(block_data, sort_keys=True).encode('utf-8')
         return hashlib.sha256(block_string).hexdigest()
 
@@ -154,10 +164,9 @@ class BlockchainNode:
         
         return Block(
             index=0,
-            previous_hash='0',  # Genesis has no previous block
+            previous_hash='0',
             station_message=GENESIS_MESSAGE,
-            tx_hashes=[],  # No transactions in genesis block
-            # timestamp=GENESIS_TIMESTAMP if 'GENESIS_TIMESTAMP' in globals() else time.time()
+            tx_hashes=[]
         )
 
     # ------------------------------------------------------------------------
@@ -526,16 +535,22 @@ class BlockchainNode:
         return True
 
     # ------------------------------------------------------------------------
-    # Synchronization
+    # Synchronization (with genesis block special handling)
     # ------------------------------------------------------------------------
 
     def sync_with_peer(self, peer_chain_file: str, peer_tx_file: str):
-        """Synchronizes chain and transaction pool with another node's files."""
+        """
+        Synchronizes chain and transaction pool with another node's files.
+        Includes special handling for genesis block: blocks are considered
+        matching if they have the same station message, even if timestamps differ.
+        """
         print("\n" + "="*80)
         print("🔄 SYNCHRONIZING WITH PEER")
         print("="*80)
         
+        # --------------------------------------------------------------------
         # Load peer's chain
+        # --------------------------------------------------------------------
         if not os.path.exists(peer_chain_file):
             print(f"❌ Error: Peer chain file '{peer_chain_file}' not found.")
             return
@@ -572,7 +587,9 @@ class BlockchainNode:
             print(f"❌ Error reading peer chain file: {e}")
             return
 
+        # --------------------------------------------------------------------
         # Load peer's transaction pool
+        # --------------------------------------------------------------------
         peer_tx_pool = {}
         if os.path.exists(peer_tx_file):
             try:
@@ -594,19 +611,47 @@ class BlockchainNode:
             except Exception as e:
                 print(f"⚠️  Warning: Error reading peer tx file: {e}")
 
-        # Compare chains
-        print("\n📊 Comparing chains...")
+        # --------------------------------------------------------------------
+        # SPECIAL HANDLING FOR GENESIS BLOCK
+        # --------------------------------------------------------------------
+        print("\n🔍 Checking genesis blocks...")
         
-        # Check genesis block first!
-        if self.chain[0].station_message != peer_chain[0].station_message:
-            print("\n❌ CRITICAL: Genesis blocks are different!")
-            print(f"   Your genesis:  \"{self.chain[0].station_message}\"")
-            print(f"   Peer's genesis: \"{peer_chain[0].station_message}\"")
+        genesis_self = self.chain[0]
+        genesis_peer = peer_chain[0]
+        
+        # Check if station messages match
+        if genesis_self.station_message == genesis_peer.station_message:
+            # Check if station message hashes match
+            if genesis_self.station_message_hash == genesis_peer.station_message_hash:
+                print("✅ Genesis blocks MATCH (same station message)!")
+                print(f"   Your message: \"{genesis_self.station_message}\"")
+                print(f"   Peer message: \"{genesis_peer.station_message}\"")
+                print("   (Timestamps are ignored for genesis comparison)")
+                
+                # Set common prefix to at least 1, even if block hashes differ
+                common_len = 1
+            else:
+                print("\n❌ CRITICAL: Genesis station message hashes are different!")
+                print(f"   Your hash:     {genesis_self.station_message_hash[:16]}...")
+                print(f"   Peer's hash:   {genesis_peer.station_message_hash[:16]}...")
+                print("   This means the genesis messages are actually different!")
+                print("   Synchronization impossible - different blockchains!")
+                return
+        else:
+            print("\n❌ CRITICAL: Genesis messages are different!")
+            print(f"   Your genesis:  \"{genesis_self.station_message}\"")
+            print(f"   Peer's genesis: \"{genesis_peer.station_message}\"")
             print("   Synchronization impossible - different blockchains!")
             return
+
+        # --------------------------------------------------------------------
+        # Compare remaining chains (starting from block 1)
+        # --------------------------------------------------------------------
+        print("\n📊 Comparing chains from block #1...")
         
-        common_len = 0
-        for i in range(min(len(self.chain), len(peer_chain))):
+        # Find common prefix starting from block 1
+        max_common = min(len(self.chain), len(peer_chain))
+        for i in range(1, max_common):
             if self.chain[i].block_hash == peer_chain[i].block_hash:
                 common_len = i + 1
             else:
@@ -614,13 +659,11 @@ class BlockchainNode:
 
         print(f"   Our chain: {len(self.chain)} blocks")
         print(f"   Peer chain: {len(peer_chain)} blocks")
-        print(f"   Common prefix: {common_len} blocks")
+        print(f"   Common prefix: {common_len} blocks (including genesis)")
 
-        if common_len == 0:
-            print("\n❌ ERROR: Chains have no common blocks!")
-            return
-
+        # --------------------------------------------------------------------
         # Chain resolution
+        # --------------------------------------------------------------------
         if len(peer_chain) > len(self.chain) and common_len == len(self.chain):
             print("\n✅ Our chain is a prefix of peer's longer chain. Accepting peer chain.")
             self.chain = peer_chain
@@ -630,18 +673,26 @@ class BlockchainNode:
             print("\nℹ️  Our chain is longer and contains peer's chain. No update needed.")
             
         elif common_len < len(self.chain) and common_len < len(peer_chain):
-            print("\n⚠️  WARNING: Chains have diverged!")
+            print("\n⚠️  WARNING: Chains have diverged after block #{}!".format(common_len-1))
             print(f"   First divergence at block #{common_len}")
+            print(f"   Our block:  {self.chain[common_len].block_hash[:16]}...")
+            print(f"   Peer block: {peer_chain[common_len].block_hash[:16]}...")
+            
             if len(self.chain) > len(peer_chain):
                 print(f"   Our chain is longer ({len(self.chain)} vs {len(peer_chain)}), keeping ours.")
             elif len(peer_chain) > len(self.chain):
                 print(f"   Peer chain is longer ({len(peer_chain)} vs {len(self.chain)}), but they diverged.")
                 print("   Manual resolution required.")
+            else:
+                print("   Both chains have same length but different content.")
+                print("   Manual resolution required.")
             
         else:
             print("\n✅ Chains are identical.")
 
+        # --------------------------------------------------------------------
         # Merge transaction pools
+        # --------------------------------------------------------------------
         if peer_tx_pool:
             before_merge = len(self.tx_pool)
             
@@ -744,6 +795,7 @@ def main():
     print("="*80)
     print(f"Genesis block: \"{GENESIS_MESSAGE}\"")
     print("All participants start from this REAL UVB-76 transmission")
+    print("Genesis blocks are considered identical based on message, not timestamp")
     print("="*80)
     
     # Create node (will automatically create genesis block if needed)
