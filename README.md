@@ -10,7 +10,7 @@ It’s a post‑apocalyptic game, a crypto‑archaeological artifact, and a medi
 How it works (in short)
 
     Layer 1 – The Anchor Chain
-    Every time UVB-76 speaks (e.g., "MЯСНИК 45 39 72 ЗИМОРОДОК"), participants create a new block containing that message, its hash, and a list of user‑message hashes. The block is chained to the previous one via the usual previous_hash.
+    Every time UVB-76 speaks (e.g., "HЖTИ 76472 ПEPEДEPЖKA 4301 8808"), participants create a new block containing that message, its hash, and a list of user‑message hashes. The block is chained to the previous one via the usual previous_hash.
 
     Layer 2 – User Messages
     Anyone can create a transaction (sender, recipient, text). Transactions are stored in a local pool and can be exchanged physically. When the next radio message arrives, the participant may include any set of transaction hashes into the new block. Once included, the transaction is permanently anchored.
