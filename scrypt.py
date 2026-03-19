@@ -16,6 +16,7 @@ import hashlib
 import json
 import time
 import os
+import glob  # для поиска файлов
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -300,10 +301,13 @@ class BlockchainNode:
         return tx.hash
 
     def find_transaction_by_hash(self, search_hash: str) -> Dict[str, Any]:
-        """Finds a transaction by its hash."""
+        """
+        Finds a transaction by its hash.
+        Searches in: pool, blocks, and JSON files in current directory.
+        """
         search_hash = search_hash.strip().lower()
         
-        # Search in pool
+        # 1. Search in pool
         for tx_hash, tx in self.tx_pool.items():
             if search_hash in tx_hash:
                 return {
@@ -314,7 +318,7 @@ class BlockchainNode:
                     'matched_hash': tx_hash
                 }
         
-        # Search in blocks
+        # 2. Search in blocks
         found_in_blocks = []
         for block in self.chain:
             for tx_hash in block.tx_hashes:
@@ -327,6 +331,91 @@ class BlockchainNode:
                         'tx_hash': tx_hash
                     })
         
+        # 3. Search in JSON files (all .json files in current directory)
+        json_files = glob.glob("*.json")
+        
+        for filepath in json_files:
+            # Skip our own blockchain and pool files to avoid confusion
+            if filepath in [self.storage_file, self.tx_pool_file]:
+                continue
+                
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Case 1: File contains a dictionary with hash as key
+                if isinstance(data, dict):
+                    # Check if the hash itself is a key
+                    if search_hash in data:
+                        tx_data = data[search_hash]
+                        if isinstance(tx_data, dict) and tx_data.get('hash') == search_hash:
+                            return {
+                                'found': True,
+                                'location': f'file: {filepath}',
+                                'transaction': tx_data
+                            }
+                    
+                    # Check if any transaction in the dict has matching hash
+                    for tx_hash, tx_data in data.items():
+                        if isinstance(tx_data, dict) and tx_data.get('hash') == search_hash:
+                            return {
+                                'found': True,
+                                'location': f'file: {filepath}',
+                                'transaction': tx_data
+                            }
+                    
+                    # Check if the dict itself is a transaction
+                    if data.get('hash') == search_hash:
+                        return {
+                            'found': True,
+                            'location': f'file: {filepath}',
+                            'transaction': data
+                        }
+                
+                # Case 2: File contains a list of transactions
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and item.get('hash') == search_hash:
+                            return {
+                                'found': True,
+                                'location': f'file: {filepath}',
+                                'transaction': item
+                            }
+                            
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Skip files that aren't valid JSON
+                continue
+            except Exception:
+                # Skip any other errors
+                continue
+        
+        # 4. Check for file named exactly like the hash (with .json extension)
+        filename = f"{search_hash}.json"
+        if os.path.exists(filename):
+            try:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # Handle both formats: direct transaction or dict with one key
+                if isinstance(data, dict):
+                    if data.get('hash') == search_hash:
+                        return {
+                            'found': True,
+                            'location': f'file: {filename}',
+                            'transaction': data
+                        }
+                    # Check if first key contains transaction
+                    for tx_hash, tx_data in data.items():
+                        if isinstance(tx_data, dict) and tx_data.get('hash') == search_hash:
+                            return {
+                                'found': True,
+                                'location': f'file: {filename}',
+                                'transaction': tx_data
+                            }
+            except Exception:
+                pass
+        
+        # 5. If found in blocks but not in files
         if found_in_blocks:
             return {
                 'found': True,
@@ -346,13 +435,14 @@ class BlockchainNode:
         print("="*70)
         
         if not result['found']:
-            print("❌ Transaction not found in pool or any block.")
+            print("❌ Transaction not found in pool, any block, or JSON files.")
             return
         
+        # If found with full transaction data
         if 'transaction' in result:
             tx = result['transaction']
             print(f"✅ Found in: {result['location']}")
-            if not result.get('exact_match', True):
+            if result.get('exact_match') is False:
                 print(f"   (Partial match for hash: {result['matched_hash'][:16]}...)")
             
             print("\n📨 MESSAGE DETAILS:")
@@ -364,8 +454,9 @@ class BlockchainNode:
             print(f"   │ Timestamp: {dt}")
             print(f"   │ Full hash: {tx['hash']}")
             print(f"   └─────────────────────────────────")
-            
-        else:
+        
+        # If found only in blocks (hash only)
+        elif 'blocks' in result:
             print(f"✅ Hash found in: {result['location']}")
             print("\n⚠️  NOTE: Only the hash is stored in the blockchain.")
             print("   To see the full message, you need the original transaction file.")
