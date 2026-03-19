@@ -54,7 +54,7 @@ This ensures all participants start from the same block.
 
 bash
 
-python3 uvb76_node.py
+python3 scrypt.py
 
     Select option 2 (Create personal message):
 
@@ -190,11 +190,11 @@ Peer's transaction pool filename: peer_tx.json
 
     Check the genesis block when synchronizing with new participants
 
-    Listen to UVB-76 online: https://www.uvb76radio.ru/
+    Listen to UVB-76 online: https://www.uvb76radio.ru/ or https://t.me/s/uvb76broadcast or https://web.max.ru/-71006372263282
 
 📁 File Structure
 
-    uvb76_node.py - the main script
+    scrypt.py - the main script
 
     blockchain.json - your local blockchain
 
