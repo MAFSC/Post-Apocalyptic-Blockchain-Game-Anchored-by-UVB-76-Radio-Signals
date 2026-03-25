@@ -278,6 +278,16 @@ class BlockchainNode:
         except Exception as e:
             print(f"❌ Error saving transaction pool: {e}")
 
+    def save_transaction_to_file(self, tx: Transaction):
+        """Saves a transaction to a file named by its hash."""
+        filename = f"{tx.hash}.json"
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(tx.to_dict(), f, ensure_ascii=False, indent=2)
+            print(f"   💾 Transaction saved to {filename}")
+        except Exception as e:
+            print(f"   ⚠️  Warning: Could not save transaction to file: {e}")
+
     # ------------------------------------------------------------------------
     # Transaction Operations
     # ------------------------------------------------------------------------
@@ -292,12 +302,17 @@ class BlockchainNode:
         
         self.tx_pool[tx.hash] = tx
         self.save_tx_pool()
+        
+        # AUTOMATICALLY SAVE TO FILE
+        self.save_transaction_to_file(tx)
+        
         print(f"\n✅ Transaction created successfully!")
         print(f"   From: {sender}")
         print(f"   To: {recipient}")
         print(f"   Message: {message}")
         print(f"   Hash: {tx.hash}")
         print(f"   Hash (short): {tx.hash[:16]}...")
+        print(f"   📁 Saved as: {tx.hash}.json")
         return tx.hash
 
     def find_transaction_by_hash(self, search_hash: str) -> Dict[str, Any]:
@@ -509,12 +524,13 @@ class BlockchainNode:
         self.chain.append(new_block)
         self.save_chain()
 
-        # Remove confirmed transactions from pool
+        # Remove confirmed transactions from pool (but keep files)
         for h in selected_tx_hashes:
             self.tx_pool.pop(h, None)
         if selected_tx_hashes:
             self.save_tx_pool()
             print(f"✅ Removed {len(selected_tx_hashes)} confirmed transactions from pool.")
+            print(f"   📁 Transaction files are kept in the folder.")
 
         # Display block info
         print(f"\n✅ Block #{new_block.index} added successfully!")
@@ -624,6 +640,169 @@ class BlockchainNode:
         if not silent:
             print("✅ Chain is intact. All blocks are valid.")
         return True
+
+    # ------------------------------------------------------------------------
+    # Export Functions
+    # ------------------------------------------------------------------------
+
+    def export_tx_pool(self, filename: str):
+        """Exports the transaction pool to a file."""
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                data = {tx_hash: tx.to_dict() for tx_hash, tx in self.tx_pool.items()}
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            print(f"✅ Transaction pool exported to {filename} ({len(self.tx_pool)} transactions)")
+        except Exception as e:
+            print(f"❌ Error exporting transaction pool: {e}")
+
+    def export_all_transactions_from_chain(self, filename: str):
+        """
+        Exports all transactions found in the blockchain to a file.
+        Scans all blocks and extracts transaction data from JSON files.
+        """
+        try:
+            all_transactions = {}
+            
+            # Get all JSON files in current directory
+            json_files = glob.glob("*.json")
+            
+            # For each transaction hash in blocks, try to find it in files
+            for block in self.chain:
+                for tx_hash in block.tx_hashes:
+                    # Skip if already found
+                    if tx_hash in all_transactions:
+                        continue
+                    
+                    # Search for transaction in JSON files
+                    found = False
+                    for filepath in json_files:
+                        # Skip our own blockchain and pool files
+                        if filepath in [self.storage_file, self.tx_pool_file]:
+                            continue
+                        
+                        try:
+                            with open(filepath, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                            
+                            # Check if this file contains our transaction
+                            if isinstance(data, dict):
+                                # Direct transaction
+                                if data.get('hash') == tx_hash:
+                                    all_transactions[tx_hash] = data
+                                    found = True
+                                    break
+                                
+                                # Dictionary of transactions
+                                for h, tx_data in data.items():
+                                    if isinstance(tx_data, dict) and tx_data.get('hash') == tx_hash:
+                                        all_transactions[tx_hash] = tx_data
+                                        found = True
+                                        break
+                                
+                                # Key is the hash
+                                if tx_hash in data:
+                                    tx_data = data[tx_hash]
+                                    if isinstance(tx_data, dict):
+                                        all_transactions[tx_hash] = tx_data
+                                        found = True
+                                        break
+                            
+                            elif isinstance(data, list):
+                                for item in data:
+                                    if isinstance(item, dict) and item.get('hash') == tx_hash:
+                                        all_transactions[tx_hash] = item
+                                        found = True
+                                        break
+                                        
+                        except Exception:
+                            continue
+                        
+                        if found:
+                            break
+                    
+                    if not found:
+                        # If transaction not found in files, add placeholder
+                        all_transactions[tx_hash] = {
+                            'hash': tx_hash,
+                            'note': 'Transaction data not found in local files',
+                            'block_index': block.index
+                        }
+            
+            # Save to file
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(all_transactions, f, ensure_ascii=False, indent=2)
+            
+            found_count = len([t for t in all_transactions.values() if 'note' not in t])
+            placeholder_count = len([t for t in all_transactions.values() if 'note' in t])
+            
+            print(f"✅ Exported {len(all_transactions)} transactions from blockchain to {filename}")
+            print(f"   Found in files: {found_count}")
+            print(f"   Placeholders: {placeholder_count}")
+            
+            if placeholder_count > 0:
+                print("\n⚠️  Some transactions were only found as hashes in the blockchain.")
+                print("   To recover them, you need the original JSON files from the sender.")
+            
+        except Exception as e:
+            print(f"❌ Error exporting transactions from chain: {e}")
+
+    # ------------------------------------------------------------------------
+    # Import Functions
+    # ------------------------------------------------------------------------
+
+    def import_tx_pool(self, filename: str):
+        """Imports transactions from a file and adds to pool."""
+        if not os.path.exists(filename):
+            print(f"❌ Error: File '{filename}' not found.")
+            return
+        
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            
+            if not content:
+                print(f"⚠️  Warning: File '{filename}' is empty.")
+                return
+                
+            data = json.loads(content)
+            
+            if not isinstance(data, dict):
+                print(f"❌ Error: File must contain a dictionary of transactions.")
+                return
+            
+            imported = 0
+            skipped = 0
+            
+            for tx_hash, tx_data in data.items():
+                try:
+                    tx = Transaction.from_dict(tx_data)
+                    
+                    if tx.hash in self.tx_pool:
+                        skipped += 1
+                        continue
+                    
+                    self.tx_pool[tx.hash] = tx
+                    imported += 1
+                    
+                    # SAVE IMPORTED TRANSACTION TO FILE
+                    self.save_transaction_to_file(tx)
+                    
+                except ValueError as e:
+                    print(f"⚠️  Warning: Skipping invalid transaction {tx_hash[:16]}...: {e}")
+                    skipped += 1
+            
+            if imported > 0:
+                self.save_tx_pool()
+            
+            print(f"\n✅ Import complete:")
+            print(f"   Imported: {imported}")
+            print(f"   Skipped: {skipped}")
+            print(f"   Total in pool now: {len(self.tx_pool)}")
+            
+        except json.JSONDecodeError:
+            print(f"❌ Error: File is not valid JSON.")
+        except Exception as e:
+            print(f"❌ Error importing transactions: {e}")
 
     # ------------------------------------------------------------------------
     # Synchronization (with genesis block special handling)
@@ -790,6 +969,8 @@ class BlockchainNode:
             for tx_hash, tx in peer_tx_pool.items():
                 if tx_hash not in self.tx_pool:
                     self.tx_pool[tx_hash] = tx
+                    # Save imported transaction to file
+                    self.save_transaction_to_file(tx)
             
             if len(self.tx_pool) > before_merge:
                 self.save_tx_pool()
@@ -803,71 +984,6 @@ class BlockchainNode:
         print("\n" + "="*80)
         print("✅ SYNCHRONIZATION COMPLETE")
         print("="*80)
-
-    # ------------------------------------------------------------------------
-    # Import/Export
-    # ------------------------------------------------------------------------
-
-    def export_tx_pool(self, filename: str):
-        """Exports the transaction pool to a file."""
-        try:
-            with open(filename, 'w', encoding='utf-8') as f:
-                data = {tx_hash: tx.to_dict() for tx_hash, tx in self.tx_pool.items()}
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            print(f"✅ Transaction pool exported to {filename} ({len(self.tx_pool)} transactions)")
-        except Exception as e:
-            print(f"❌ Error exporting transaction pool: {e}")
-
-    def import_tx_pool(self, filename: str):
-        """Imports transactions from a file and adds to pool."""
-        if not os.path.exists(filename):
-            print(f"❌ Error: File '{filename}' not found.")
-            return
-        
-        try:
-            with open(filename, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-            
-            if not content:
-                print(f"⚠️  Warning: File '{filename}' is empty.")
-                return
-                
-            data = json.loads(content)
-            
-            if not isinstance(data, dict):
-                print(f"❌ Error: File must contain a dictionary of transactions.")
-                return
-            
-            imported = 0
-            skipped = 0
-            
-            for tx_hash, tx_data in data.items():
-                try:
-                    tx = Transaction.from_dict(tx_data)
-                    
-                    if tx.hash in self.tx_pool:
-                        skipped += 1
-                        continue
-                    
-                    self.tx_pool[tx.hash] = tx
-                    imported += 1
-                    
-                except ValueError as e:
-                    print(f"⚠️  Warning: Skipping invalid transaction {tx_hash[:16]}...: {e}")
-                    skipped += 1
-            
-            if imported > 0:
-                self.save_tx_pool()
-            
-            print(f"\n✅ Import complete:")
-            print(f"   Imported: {imported}")
-            print(f"   Skipped: {skipped}")
-            print(f"   Total in pool now: {len(self.tx_pool)}")
-            
-        except json.JSONDecodeError:
-            print(f"❌ Error: File is not valid JSON.")
-        except Exception as e:
-            print(f"❌ Error importing transactions: {e}")
 
 
 # ============================================================================
@@ -904,7 +1020,7 @@ def main():
         print("6. 📖 Show entire chain")
         print("7. ✅ Verify chain integrity")
         print("8. 🔄 Synchronize with another node (files)")
-        print("9. 📤 Export transaction pool to file")
+        print("9. 📤 Export transactions")
         print("10. 📥 Import transactions from file")
         print("0. 🚪 Exit")
         print("-"*80)
@@ -982,13 +1098,25 @@ def main():
                 print("❌ Both filenames are required.")
 
         elif choice == '9':
-            print("\n📤 Export transaction pool:")
-            export_file = input("Export filename (e.g., my_transactions.json): ").strip()
+            print("\n📤 Export transactions:")
+            print("   [1] Export transaction pool (unconfirmed)")
+            print("   [2] Export all transactions from blockchain (confirmed)")
+            export_type = input("Choose export type (1 or 2): ").strip()
             
-            if export_file:
-                node.export_tx_pool(export_file)
+            if export_type == '1':
+                export_file = input("Export filename (e.g., my_transactions.json): ").strip()
+                if export_file:
+                    node.export_tx_pool(export_file)
+                else:
+                    print("❌ Filename cannot be empty.")
+            elif export_type == '2':
+                export_file = input("Export filename (e.g., blockchain_transactions.json): ").strip()
+                if export_file:
+                    node.export_all_transactions_from_chain(export_file)
+                else:
+                    print("❌ Filename cannot be empty.")
             else:
-                print("❌ Filename cannot be empty.")
+                print("❌ Invalid choice.")
 
         elif choice == '10':
             print("\n📥 Import transactions from file:")
